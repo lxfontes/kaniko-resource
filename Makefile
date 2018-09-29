@@ -1,5 +1,5 @@
 IMAGE ?= lxfontes/kaniko-resource
-VERSION ?= $(shell git rev-parse --short)
+VERSION ?= $(shell git rev-parse --short HEAD)
 
 all: test
 
@@ -9,10 +9,9 @@ test:
 release: image-build image-push
 
 image-push:
-	docker tag $(IMAGE):$(VERSION) -t $(IMAGE):latest
 	docker push $(IMAGE):$(VERSION)
 
 image-build:
-	docker build . -t $(NAME):$(VERSION)
+	docker build . -t $(IMAGE):$(VERSION) -t $(IMAGE):latest
 
 .PHONY: all test release image-push image-build

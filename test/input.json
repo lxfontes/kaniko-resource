@@ -1,0 +1,8 @@
+{
+  "source": {
+    "repository": "lxfontes/kaniko-resource-test"
+  },
+  "params": {
+    "build": "."
+  }
+}

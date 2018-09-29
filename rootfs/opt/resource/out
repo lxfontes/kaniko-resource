@@ -1,0 +1,118 @@
+#!/bin/bash
+
+set -e -u
+
+exec 3>&1 # make stdout available as fd 3 for the result
+exec 1>&2 # redirect all output to stderr for logging
+
+source=$1
+
+if [ -z "$source" ]; then
+  echo "usage: $0 <path/to/source>"
+  exit 1
+fi
+
+PAYLOAD=$(mktemp /tmp/resource-in.XXXXXX)
+cat > "$PAYLOAD"
+
+input_param() {
+  local field=$1
+  local default=${2:-}
+
+  jq -r "$field // \"$default\"" "$PAYLOAD"
+}
+
+repository=$(input_param .source.repository)
+tag_file=$(input_param .params.tag_file)
+tag_single=$(input_param .params.tag latest)
+tag_prefix=$(input_param .params.tag_prefix)
+need_tag_as_latest=$(input_param .params.tag_as_latest false)
+build_args=$(input_param .params.build_args '{}')
+build_args_file=$(input_param .params.build_args_file)
+
+tag_name=""
+if [ -n "$tag_file" ]; then
+  if [ ! -f "$tag_file" ]; then
+    echo "tag file '$tag_file' does not exist"
+    exit 1
+  fi
+  tag_name="${tag_prefix}$(cat "$tag_file")"
+else
+  tag_name="$tag_single"
+fi
+
+if [ -z "$repository" ]; then
+  echo "must specify repository"
+  exit 1
+fi
+
+build=$(input_param .params.build)
+dockerfile=$(input_param .params.dockerfile "${build}/Dockerfile")
+
+if [ -z "$build" ]; then
+  echo "Missing build param"
+  exit 1
+fi
+
+if [ ! -f "$source/$dockerfile" ]; then
+  echo "It doesn't appear that given Dockerfile: \"$dockerfile\" is a file"
+  exit 1
+fi
+
+expanded_build_args=("--build-arg KANIKO=true")
+
+build_arg_keys=($(echo "$build_args" | jq -r 'keys | join(" ")'))
+if [ "${#build_arg_keys[@]}" -gt 0 ]; then
+  for key in "${build_arg_keys[@]}"; do
+    value=$(echo "$build_args" | jq -r --arg "k" "$key" '.[$k]')
+    for var in BUILD_ID BUILD_NAME BUILD_JOB_NAME BUILD_PIPELINE_NAME BUILD_TEAM_NAME ATC_EXTERNAL_URL; do
+      value="${value//\$$var/${!var:-}}"
+      value="${value//\$\{$var\}/${!var:-}}"
+    done
+    expanded_build_args+=("--build-arg")
+    expanded_build_args+=("${key}=${value}")
+  done
+fi
+
+if [ -n "$build_args_file" ]; then
+  if jq . "$build_args_file" >/dev/null 2>&1; then
+    build_arg_keys=($(jq -r 'keys | join(" ")' "$build_args_file"))
+    if [ "${#build_arg_keys[@]}" -gt 0 ]; then
+      for key in "${build_arg_keys[@]}"; do
+        value=$(jq -r --arg "k" "$key" '.[$k]' "$build_args_file")
+        expanded_build_args+=("--build-arg")
+        expanded_build_args+=("${key}=${value}")
+      done
+    fi
+  else
+    echo "Failed to parse build_args_file ($build_args_file)"
+    exit 1
+  fi
+fi
+
+image_targets=()
+image_id="$repository:$tag_name"
+image_targets+=("$image_id")
+
+if [ "$need_tag_as_latest" = "true" ] && [ "${tag_name}" != "latest"  ]; then
+  echo "${repository}:${tag_name} tagged as latest"
+  image_targets+=("${repository}:latest")
+fi
+
+
+# silence docker config
+mkdir -p "$HOME/.docker"
+[ ! -f "$HOME/.docker/config.json" ] && (echo "{}" > "$HOME/.docker/config.json")
+# shellcheck disable=2068
+executor -c "$source/$build" -d ${image_targets[@]} -f "$source/$dockerfile" ${expanded_build_args[@]}
+
+cat << EOF >&3
+{
+  version: {
+    ref: "$tag_name"
+  },
+  metadata: [
+    { name: "image", value: "$image_id" }
+  ]
+}
+EOF

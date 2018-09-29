@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# shouldn't be used as input
+exit 1
